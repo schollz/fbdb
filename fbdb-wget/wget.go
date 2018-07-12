@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
-	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -32,6 +34,7 @@ func main() {
 		cli.BoolFlag{Name: "no-clobber,nc"},
 		cli.StringFlag{Name: "list,i"},
 		cli.BoolFlag{Name: "compress"},
+		cli.BoolFlag{Name: "debug,d"},
 		cli.IntFlag{Name: "workers,w", Value: 1},
 	}
 	app.Action = func(c *cli.Context) error {
@@ -42,6 +45,11 @@ func main() {
 			w.fileWithList = c.GlobalString("list")
 		} else {
 			return errors.New("need to specify URL")
+		}
+		if c.GlobalBool("debug") {
+			setLogLevel("debug")
+		} else {
+			setLogLevel("info")
 		}
 		w.noClobber = c.GlobalBool("no-clobber")
 		w.userTor = c.GlobalBool("tor")
@@ -67,6 +75,7 @@ type wget struct {
 	url             string
 	compressResults bool
 	numWorkers      int
+	torconnection   []*tor.Tor
 }
 
 type job struct {
@@ -88,19 +97,16 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 		},
 		Timeout: 10 * time.Second,
 	}
+	defer func() {
+		log.Debugf("worker %d finished", id)
+	}()
 	if w.userTor {
-		fmt.Println("Starting tor and fetching title of https://check.torproject.org, please wait a few seconds...")
-		t, err := tor.Start(nil, nil)
-		if err != nil {
-			log.Error(err)
-			return
-		}
-		defer t.Close()
+		log.Debugf("starting tor in worker %d", id)
 		// Wait at most a minute to start network and get
-		dialCtx, dialCancel := context.WithTimeout(context.Background(), time.Minute)
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), 3000*time.Hour)
 		defer dialCancel()
 		// Make connection
-		dialer, err := t.Dialer(dialCtx, nil)
+		dialer, err := w.torconnection[id].Dialer(dialCtx, nil)
 		if err != nil {
 			log.Error(err)
 			return
@@ -120,7 +126,7 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			log.Error(err)
 			return
 		}
-		log.Debugf("your new IP: %s", body)
+		log.Debugf("your new IP: %s", bytes.TrimSpace(body))
 	}
 
 	for j := range jobs {
@@ -183,8 +189,54 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 	}
 }
 
+func (w *wget) cleanup(interrupted bool) {
+	if w.userTor {
+		for i := range w.torconnection {
+			w.torconnection[i].Close()
+		}
+
+		torFolders, err := filepath.Glob("data-dir-*")
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		for _, torFolder := range torFolders {
+			errRemove := os.RemoveAll(torFolder)
+			if errRemove == nil {
+				log.Debugf("removed %s", torFolder)
+			}
+		}
+	}
+
+	if interrupted {
+		os.Exit(1)
+	}
+}
+
 func (w *wget) start() (err error) {
 	defer log.Flush()
+	defer w.cleanup(false)
+
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	go func() {
+		for sig := range c {
+			// cleanup
+			log.Debug(sig)
+			w.cleanup(true)
+		}
+	}()
+
+	if w.userTor {
+		w.torconnection = make([]*tor.Tor, w.numWorkers)
+		for i := 0; i < w.numWorkers; i++ {
+			w.torconnection[i], err = tor.Start(nil, nil)
+			if err != nil {
+				return
+			}
+		}
+	}
+
 	numURLs := 1
 	if w.fileWithList != "" {
 		numURLs, err = countLines(w.fileWithList)
