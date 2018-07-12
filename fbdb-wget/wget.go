@@ -35,6 +35,7 @@ func main() {
 		cli.StringFlag{Name: "list,i"},
 		cli.BoolFlag{Name: "compress"},
 		cli.BoolFlag{Name: "debug,d"},
+		cli.BoolFlag{Name: "quiet,q"},
 		cli.IntFlag{Name: "workers,w", Value: 1},
 	}
 	app.Action = func(c *cli.Context) error {
@@ -48,6 +49,8 @@ func main() {
 		}
 		if c.GlobalBool("debug") {
 			setLogLevel("debug")
+		} else if c.GlobalBool("quiet") {
+			setLogLevel("error")
 		} else {
 			setLogLevel("info")
 		}
@@ -107,8 +110,8 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			// Make connection
 			dialer, err := w.torconnection[id].Dialer(dialCtx, nil)
 			if err != nil {
-				log.Error(err)
-				return
+				log.Warn(err)
+				continue
 			}
 			httpClient.Transport = &http.Transport{
 				DialContext:         dialer.DialContext,
@@ -118,14 +121,14 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			// Get /
 			resp, err := httpClient.Get("http://icanhazip.com/")
 			if err != nil {
-				log.Error(err)
+				log.Warn(err)
 				continue
 			}
 
 			body, err := ioutil.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil {
-				log.Error(err)
+				log.Warn(err)
 				continue
 			}
 			log.Debugf("worker %d IP: %s", id, bytes.TrimSpace(body))
