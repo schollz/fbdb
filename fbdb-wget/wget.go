@@ -98,35 +98,39 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 		log.Debugf("worker %d finished", id)
 	}()
 	if w.userTor {
-		log.Debugf("starting tor in worker %d", id)
-		// Wait at most a minute to start network and get
-		dialCtx, dialCancel := context.WithTimeout(context.Background(), 3000*time.Hour)
-		defer dialCancel()
-		// Make connection
-		dialer, err := w.torconnection[id].Dialer(dialCtx, nil)
-		if err != nil {
-			log.Error(err)
-			return
-		}
-		httpClient.Transport = &http.Transport{
-			DialContext:         dialer.DialContext,
-			MaxIdleConnsPerHost: 20,
-		}
+		// keep trying until it gets on
+		for {
+			log.Debugf("starting tor in worker %d", id)
+			// Wait at most a minute to start network and get
+			dialCtx, dialCancel := context.WithTimeout(context.Background(), 3000*time.Hour)
+			defer dialCancel()
+			// Make connection
+			dialer, err := w.torconnection[id].Dialer(dialCtx, nil)
+			if err != nil {
+				log.Error(err)
+				return
+			}
+			httpClient.Transport = &http.Transport{
+				DialContext:         dialer.DialContext,
+				MaxIdleConnsPerHost: 20,
+			}
 
-		// Get /
-		resp, err := httpClient.Get("http://icanhazip.com/")
-		if err != nil {
-			log.Error(err)
-			return
-		}
+			// Get /
+			resp, err := httpClient.Get("http://icanhazip.com/")
+			if err != nil {
+				log.Error(err)
+				continue
+			}
 
-		body, err := ioutil.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			log.Error(err)
-			return
+			body, err := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				log.Error(err)
+				continue
+			}
+			log.Debugf("worker %d IP: %s", id, bytes.TrimSpace(body))
+			break
 		}
-		log.Debugf("worker %d IP: %s", id, bytes.TrimSpace(body))
 	}
 
 	for j := range jobs {
