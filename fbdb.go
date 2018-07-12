@@ -170,12 +170,13 @@ func (fs *FileSystem) NewFile(name string, data []byte) (f File, err error) {
 		Size:        len(data),
 		Created:     time.Now(),
 		Modified:    time.Now(),
+		Data:        data,
 	}
 
 	if fs.doCompression {
 		f.IsCompressed = true
-		// TODO: do compression and update size
-		f.Size = len(data)
+		f.Data = compressByte(data)
+		f.Size = len(f.Data)
 	}
 
 	if fs.encryptPassphrase != "" {
@@ -270,6 +271,34 @@ func (fs *FileSystem) Open(name string) (f File, err error) {
 		err = errors.New("no files with that name")
 	} else {
 		f = files[0]
+	}
+
+	if f.IsCompressed {
+		f.Data = decompressByte(f.Data)
+		f.Size = len(f.Data)
+	}
+
+	// TODO
+	// decryption
+
+	return
+}
+
+// Exists returns whether specified file exists
+func (fs *FileSystem) Exists(name string) (exists bool, err error) {
+	err = fs.startTransaction()
+	if err != nil {
+		return
+	}
+	defer fs.finishTransaction()
+
+	files, err := fs.getAllFromPreparedQuery(`
+		SELECT * FROM fs WHERE name = ?`, name)
+	if err != nil {
+		err = errors.Wrap(err, "Exists")
+	}
+	if len(files) > 0 {
+		exists = true
 	}
 	return
 }
