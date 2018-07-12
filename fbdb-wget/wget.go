@@ -111,7 +111,10 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			log.Error(err)
 			return
 		}
-		httpClient.Transport = &http.Transport{DialContext: dialer.DialContext}
+		httpClient.Transport = &http.Transport{
+			DialContext:         dialer.DialContext,
+			MaxIdleConnsPerHost: 20,
+		}
 
 		// Get /
 		resp, err := httpClient.Get("http://icanhazip.com/")
@@ -133,8 +136,7 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 		err := func(j job) (err error) {
 			// check if valid url
 			if !strings.Contains(j.url, "://") {
-				err = errors.New("malformed url")
-				return
+				j.url = "https://" + j.url
 			}
 
 			filename := strings.Split(j.url, "://")[1]
@@ -239,10 +241,12 @@ func (w *wget) start() (err error) {
 
 	numURLs := 1
 	if w.fileWithList != "" {
+		log.Debug("counting number of lines")
 		numURLs, err = countLines(w.fileWithList)
 		if err != nil {
 			return
 		}
+		log.Debugf("found %d lines", numURLs)
 	}
 
 	jobs := make(chan job, numURLs)
@@ -253,6 +257,7 @@ func (w *wget) start() (err error) {
 	}
 
 	// submit jobs
+	numJobs := 1
 	if w.fileWithList != "" {
 		var file *os.File
 		file, err = os.Open(w.fileWithList)
@@ -261,7 +266,7 @@ func (w *wget) start() (err error) {
 		}
 
 		scanner := bufio.NewScanner(file)
-		numJobs := 0
+		numJobs = 0
 		for scanner.Scan() {
 			numJobs++
 			jobs <- job{
@@ -282,8 +287,8 @@ func (w *wget) start() (err error) {
 	close(jobs)
 
 	// print out errors
-	log.Debugf("waiting for %d jobs", numURLs)
-	for i := 0; i < numURLs; i++ {
+	log.Debugf("waiting for %d jobs", numJobs)
+	for i := 0; i < numJobs; i++ {
 		a := <-results
 		if a.err != nil {
 			log.Warnf("problem with %s: %s", a.url, a.err.Error())
