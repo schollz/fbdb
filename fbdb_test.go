@@ -27,6 +27,10 @@ func TestBasic(t *testing.T) {
 	assert.Equal(t, f.Data, f2.Data)
 	assert.Nil(t, err)
 
-	_, err = fs.Open("doesn't exist")
-	assert.NotNil(t, err)
+	exists, err := fs.Exists("doesn't exist")
+	assert.Nil(t, err)
+	assert.False(t, exists)
+	exists, err = fs.Exists("test1")
+	assert.Nil(t, err)
+	assert.True(t, exists)
 }
