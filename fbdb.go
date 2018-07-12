@@ -255,6 +255,12 @@ func (fs *FileSystem) Save(f File) (err error) {
 		return errors.Wrap(err, "commit Save")
 	}
 	return
+
+}
+
+// Close will make sure that the lock file is closed
+func (fs *FileSystem) Close() (err error) {
+	return fs.finishTransaction()
 }
 
 // Open returns the info from a file

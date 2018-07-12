@@ -76,6 +76,7 @@ type wget struct {
 	compressResults bool
 	numWorkers      int
 	torconnection   []*tor.Tor
+	fs              *fbdb.FileSystem
 }
 
 type job struct {
@@ -87,10 +88,6 @@ type result struct {
 }
 
 func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
-	fs, err := fbdb.New("urls.db", fbdb.OptionCompress(w.compressResults))
-	if err != nil {
-		panic(err)
-	}
 	httpClient := &http.Client{
 		Transport: &http.Transport{
 			MaxIdleConnsPerHost: 20,
@@ -129,7 +126,7 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			log.Error(err)
 			return
 		}
-		log.Debugf("your new IP: %s", bytes.TrimSpace(body))
+		log.Debugf("worker %d IP: %s", id, bytes.TrimSpace(body))
 	}
 
 	for j := range jobs {
@@ -143,7 +140,7 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			// if no clobber, check if exists
 			if w.noClobber {
 				var exists bool
-				exists, err = fs.Exists(filename)
+				exists, err = w.fs.Exists(filename)
 				if err != nil {
 					return
 				}
@@ -174,11 +171,11 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			}
 
 			// save
-			f, err := fs.NewFile(filename, body)
+			f, err := w.fs.NewFile(filename, body)
 			if err != nil {
 				return
 			}
-			err = fs.Save(f)
+			err = w.fs.Save(f)
 			if err == nil {
 				log.Infof("saved %s", j.url)
 			}
@@ -194,7 +191,10 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 func (w *wget) cleanup(interrupted bool) {
 	if w.userTor {
 		for i := range w.torconnection {
-			w.torconnection[i].Close()
+			err := w.torconnection[i].Close()
+			if err != nil {
+				log.Errorf("problem closing tor connection %d: %s", i, err.Error())
+			}
 		}
 
 		torFolders, err := filepath.Glob("data-dir-*")
@@ -208,6 +208,10 @@ func (w *wget) cleanup(interrupted bool) {
 				log.Debugf("removed %s", torFolder)
 			}
 		}
+	}
+
+	if w.fs != nil {
+		w.fs.Close()
 	}
 
 	if interrupted {
@@ -228,6 +232,11 @@ func (w *wget) start() (err error) {
 			w.cleanup(true)
 		}
 	}()
+
+	w.fs, err = fbdb.New("urls.db", fbdb.OptionCompress(w.compressResults))
+	if err != nil {
+		panic(err)
+	}
 
 	if w.userTor {
 		w.torconnection = make([]*tor.Tor, w.numWorkers)
