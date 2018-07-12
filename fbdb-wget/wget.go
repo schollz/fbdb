@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	log "github.com/cihub/seelog"
+	"github.com/cretz/bine/tor"
 	"github.com/pkg/errors"
 	"github.com/schollz/fbdb"
 	"github.com/urfave/cli"
@@ -64,8 +67,6 @@ type wget struct {
 	url             string
 	compressResults bool
 	numWorkers      int
-
-	httpClient *http.Client
 }
 
 type job struct {
@@ -81,6 +82,47 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 	if err != nil {
 		panic(err)
 	}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConnsPerHost: 20,
+		},
+		Timeout: 10 * time.Second,
+	}
+	if w.userTor {
+		fmt.Println("Starting tor and fetching title of https://check.torproject.org, please wait a few seconds...")
+		t, err := tor.Start(nil, nil)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		defer t.Close()
+		// Wait at most a minute to start network and get
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer dialCancel()
+		// Make connection
+		dialer, err := t.Dialer(dialCtx, nil)
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		httpClient.Transport = &http.Transport{DialContext: dialer.DialContext}
+
+		// Get /
+		resp, err := httpClient.Get("http://icanhazip.com/")
+		if err != nil {
+			log.Error(err)
+			return
+		}
+
+		body, err := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Error(err)
+			return
+		}
+		log.Debugf("your new IP: %s", body)
+	}
+
 	for j := range jobs {
 		err := func(j job) (err error) {
 			// check if valid url
@@ -110,7 +152,7 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 				err = errors.Wrap(err, "bad request")
 				return
 			}
-			resp, err := w.httpClient.Do(req)
+			resp, err := httpClient.Do(req)
 			if err != nil && resp == nil {
 				err = errors.Wrap(err, "bad do")
 				return
@@ -143,13 +185,6 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 
 func (w *wget) start() (err error) {
 	defer log.Flush()
-	w.httpClient = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConnsPerHost: 20,
-		},
-		Timeout: 10 * time.Second,
-	}
-
 	numURLs := 1
 	if w.fileWithList != "" {
 		numURLs, err = countLines(w.fileWithList)
