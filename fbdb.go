@@ -3,6 +3,7 @@ package fbdb
 import (
 	"database/sql"
 	"os"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -18,9 +19,11 @@ type FileSystem struct {
 	doCompression     bool
 
 	db       *sql.DB
-	lock     *golock.Lock
+	filelock *golock.Lock
 	isOpen   bool
 	isClosed bool
+
+	sync.RWMutex
 }
 
 // File is the basic unit that is saved
@@ -78,7 +81,7 @@ func New(name string, options ...Option) (fs *FileSystem, err error) {
 		return
 	}
 
-	fs.lock = golock.New(
+	fs.filelock = golock.New(
 		golock.OptionSetName(fs.name+".lock"),
 		golock.OptionSetInterval(1*time.Millisecond),
 		golock.OptionSetTimeout(30*time.Second),
@@ -88,13 +91,13 @@ func New(name string, options ...Option) (fs *FileSystem, err error) {
 
 func (fs *FileSystem) finishTransaction() (err error) {
 	fs.db.Close()
-	fs.lock.Unlock()
+	fs.filelock.Unlock()
 	return
 }
 
 func (fs *FileSystem) startTransaction() (err error) {
 	// obtain a lock on the database
-	err = fs.lock.Lock()
+	err = fs.filelock.Lock()
 	if err != nil {
 		err = errors.Wrap(err, "could not get lock")
 		return
@@ -167,6 +170,8 @@ groups (
 
 // NewFile returns a new file
 func (fs *FileSystem) NewFile(name string, data []byte) (f File, err error) {
+	fs.Lock()
+	defer fs.Unlock()
 	f = File{
 		Name:        name,
 		Permissions: os.FileMode(0644),
@@ -191,6 +196,9 @@ func (fs *FileSystem) NewFile(name string, data []byte) (f File, err error) {
 
 // Save a file to the file system
 func (fs *FileSystem) Save(f File) (err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
 	defer fs.finishTransaction()
 	err = fs.startTransaction()
 	if err != nil {
@@ -260,11 +268,17 @@ func (fs *FileSystem) Save(f File) (err error) {
 
 // Close will make sure that the lock file is closed
 func (fs *FileSystem) Close() (err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
 	return fs.finishTransaction()
 }
 
 // Open returns the info from a file
 func (fs *FileSystem) Open(name string) (f File, err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
 	defer fs.finishTransaction()
 	err = fs.startTransaction()
 	if err != nil {
@@ -295,6 +309,9 @@ func (fs *FileSystem) Open(name string) (f File, err error) {
 
 // Exists returns whether specified file exists
 func (fs *FileSystem) Exists(name string) (exists bool, err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
 	defer fs.finishTransaction()
 	err = fs.startTransaction()
 	if err != nil {
@@ -316,7 +333,7 @@ func (fs *FileSystem) getAllFromPreparedQuery(query string, args ...interface{})
 	// prepare statement
 	stmt, err := fs.db.Prepare(query)
 	if err != nil {
-		err = errors.Wrap(err, query)
+		err = errors.Wrap(err, "preparing query: "+query)
 		return
 	}
 
