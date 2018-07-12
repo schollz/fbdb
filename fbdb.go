@@ -52,6 +52,13 @@ func OptionReadOnly(readOnly bool) Option {
 	}
 }
 
+// OptionCompress sets compression on
+func OptionCompress(compress bool) Option {
+	return func(fs *FileSystem) {
+		fs.doCompression = compress
+	}
+}
+
 // New will initialize a filesystem
 func New(name string, options ...Option) (fs *FileSystem, err error) {
 	fs = new(FileSystem)
@@ -80,12 +87,8 @@ func New(name string, options ...Option) (fs *FileSystem, err error) {
 }
 
 func (fs *FileSystem) finishTransaction() (err error) {
-	err = fs.db.Close()
-	if err != nil {
-		fs.lock.Unlock()
-		return
-	}
-	err = fs.lock.Unlock()
+	fs.db.Close()
+	fs.lock.Unlock()
 	return
 }
 
@@ -188,11 +191,11 @@ func (fs *FileSystem) NewFile(name string, data []byte) (f File, err error) {
 
 // Save a file to the file system
 func (fs *FileSystem) Save(f File) (err error) {
+	defer fs.finishTransaction()
 	err = fs.startTransaction()
 	if err != nil {
 		return
 	}
-	defer fs.finishTransaction()
 
 	tx, err := fs.db.Begin()
 	if err != nil {
@@ -256,11 +259,11 @@ func (fs *FileSystem) Save(f File) (err error) {
 
 // Open returns the info from a file
 func (fs *FileSystem) Open(name string) (f File, err error) {
+	defer fs.finishTransaction()
 	err = fs.startTransaction()
 	if err != nil {
 		return
 	}
-	defer fs.finishTransaction()
 
 	files, err := fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs WHERE name = ?`, name)
@@ -286,11 +289,11 @@ func (fs *FileSystem) Open(name string) (f File, err error) {
 
 // Exists returns whether specified file exists
 func (fs *FileSystem) Exists(name string) (exists bool, err error) {
+	defer fs.finishTransaction()
 	err = fs.startTransaction()
 	if err != nil {
 		return
 	}
-	defer fs.finishTransaction()
 
 	files, err := fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs WHERE name = ?`, name)

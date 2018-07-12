@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"errors"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -10,11 +9,14 @@ import (
 	"time"
 
 	log "github.com/cihub/seelog"
+	"github.com/pkg/errors"
 	"github.com/schollz/fbdb"
 	"github.com/urfave/cli"
 )
 
 func main() {
+	defer log.Flush()
+
 	app := cli.NewApp()
 	app.Name = "fbdb-wget"
 	app.Version = "0.1.0"
@@ -26,24 +28,42 @@ func main() {
 		cli.BoolFlag{Name: "tor"},
 		cli.BoolFlag{Name: "no-clobber,nc"},
 		cli.StringFlag{Name: "list,i"},
+		cli.BoolFlag{Name: "compress"},
+		cli.IntFlag{Name: "workers,w", Value: 1},
 	}
 	app.Action = func(c *cli.Context) error {
 		w := new(wget)
 		if c.Args().First() != "" {
 			w.url = c.Args().First()
+		} else if c.GlobalString("list") != "" {
+			w.fileWithList = c.GlobalString("list")
+		} else {
+			return errors.New("need to specify URL")
+		}
+		w.noClobber = c.GlobalBool("no-clobber")
+		w.userTor = c.GlobalBool("tor")
+		w.compressResults = c.GlobalBool("compress")
+		w.numWorkers = c.GlobalInt("workers")
+		if w.numWorkers < 1 {
+			return errors.New("cannot have less than 1 worker")
 		}
 		return w.start()
 	}
 
 	// ignore error so we don't exit non-zero and break gfmrun README example tests
-	_ = app.Run(os.Args)
+	err := app.Run(os.Args)
+	if err != nil {
+		log.Error(err)
+	}
 }
 
 type wget struct {
-	userTor      bool
-	noClobber    bool
-	fileWithList string
-	url          string
+	userTor         bool
+	noClobber       bool
+	fileWithList    string
+	url             string
+	compressResults bool
+	numWorkers      int
 
 	httpClient *http.Client
 }
@@ -57,7 +77,7 @@ type result struct {
 }
 
 func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
-	fs, err := fbdb.New("urls.db")
+	fs, err := fbdb.New("urls.db", fbdb.OptionCompress(w.compressResults))
 	if err != nil {
 		panic(err)
 	}
@@ -72,19 +92,27 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			filename := strings.Split(j.url, "://")[1]
 			// if no clobber, check if exists
 			if w.noClobber {
-				_, errExists := fs.Open(filename)
-				if errExists == nil {
+				var exists bool
+				exists, err = fs.Exists(filename)
+				if err != nil {
+					return
+				}
+				if exists {
+					log.Infof("already saved %s", j.url)
 					return nil
 				}
 			}
 
 			// make request
+			log.Debugf("making request for %s", j.url)
 			req, err := http.NewRequest("GET", j.url, nil)
 			if err != nil {
+				err = errors.Wrap(err, "bad request")
 				return
 			}
 			resp, err := w.httpClient.Do(req)
 			if err != nil && resp == nil {
+				err = errors.Wrap(err, "bad do")
 				return
 			}
 
@@ -94,7 +122,6 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			if err != nil {
 				return
 			}
-			log.Debugf("body: %s", body)
 
 			// save
 			f, err := fs.NewFile(filename, body)
@@ -102,6 +129,9 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 				return
 			}
 			err = fs.Save(f)
+			if err == nil {
+				log.Infof("saved %s", j.url)
+			}
 			return
 		}(j)
 		results <- result{
@@ -131,7 +161,7 @@ func (w *wget) start() (err error) {
 	jobs := make(chan job, numURLs)
 	results := make(chan result, numURLs)
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < w.numWorkers; i++ {
 		go w.getURL(i, jobs, results)
 	}
 
@@ -144,11 +174,14 @@ func (w *wget) start() (err error) {
 		}
 
 		scanner := bufio.NewScanner(file)
+		numJobs := 0
 		for scanner.Scan() {
+			numJobs++
 			jobs <- job{
 				url: strings.TrimSpace(scanner.Text()),
 			}
 		}
+		log.Debugf("sent %d jobs", numJobs)
 
 		if errScan := scanner.Err(); errScan != nil {
 			log.Error(errScan)
@@ -162,11 +195,10 @@ func (w *wget) start() (err error) {
 	close(jobs)
 
 	// print out errors
+	log.Debugf("waiting for %d jobs", numURLs)
 	for i := 0; i < numURLs; i++ {
 		a := <-results
-		if a.err == nil {
-			log.Infof("saved %s", a.url)
-		} else {
+		if a.err != nil {
 			log.Warnf("problem with %s: %s", a.url, a.err.Error())
 		}
 	}

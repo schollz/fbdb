@@ -61,7 +61,7 @@ func countLines(fname string) (lines int, err error) {
 
 func lineCounter(r io.Reader) (int, error) {
 	buf := make([]byte, 32*1024)
-	count := 0
+	count := 1
 	lineSep := []byte{'\n'}
 
 	for {
