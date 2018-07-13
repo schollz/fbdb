@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -100,6 +101,8 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 	defer func() {
 		log.Debugf("worker %d finished", id)
 	}()
+
+RestartTor:
 	if w.userTor {
 		// keep trying until it gets on
 		for {
@@ -158,7 +161,6 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			}
 
 			// make request
-			log.Debugf("making request for %s", j.url)
 			req, err := http.NewRequest("GET", j.url, nil)
 			if err != nil {
 				err = errors.Wrap(err, "bad request")
@@ -167,6 +169,16 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 			resp, err := httpClient.Do(req)
 			if err != nil && resp == nil {
 				err = errors.Wrap(err, "bad do")
+				return
+			}
+
+			// check request's validity
+			log.Debugf("%d requested %s: %d %s", id, j.url, resp.StatusCode, http.StatusText(resp.StatusCode))
+			if resp.StatusCode == 503 || resp.StatusCode == 403 {
+				err = fmt.Errorf("received %d code", resp.StatusCode)
+				if w.userTor {
+					err = errors.New("restart tor")
+				}
 				return
 			}
 
@@ -191,6 +203,9 @@ func (w *wget) getURL(id int, jobs <-chan job, results chan<- result) {
 		results <- result{
 			url: j.url,
 			err: err,
+		}
+		if err != nil && err.Error() == "restart tor" {
+			goto RestartTor
 		}
 	}
 }
