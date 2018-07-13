@@ -33,4 +33,7 @@ func TestBasic(t *testing.T) {
 	exists, err = fs.Exists("test1")
 	assert.Nil(t, err)
 	assert.True(t, exists)
+
+	err = fs.DumpSQL()
+	assert.Nil(t, err)
 }

@@ -9,6 +9,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
 	"github.com/schollz/golock"
+	"github.com/schollz/sqlitedump"
 )
 
 type FileSystem struct {
@@ -165,6 +166,19 @@ groups (
 	if err != nil {
 		err = errors.Wrap(err, "creating table")
 	}
+	return
+}
+
+// DumpSQL will dump the SQL as text to filename.sql
+func (fs *FileSystem) DumpSQL() (err error) {
+	fs.Lock()
+	defer fs.Unlock()
+	var dumpFile *os.File
+	dumpFile, err = os.Create(fs.name + ".sql")
+	if err != nil {
+		return
+	}
+	err = sqlitedump.Dump(fs.name, dumpFile)
 	return
 }
 
