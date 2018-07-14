@@ -2,10 +2,56 @@ package fbdb
 
 import (
 	"os"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
+
+func BenchmarkNewFile(b *testing.B) {
+	os.Remove("test.db")
+	os.Remove("test.db.lock")
+	defer os.Remove("test.db")
+	fs, _ := New("test.db")
+	for i := 0; i < b.N; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+}
+
+func BenchmarkGet(b *testing.B) {
+	os.Remove("test.db")
+	os.Remove("test.db.lock")
+	defer os.Remove("test.db")
+	fs, _ := New("test.db")
+	for i := 0; i < 100; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fs.Get("test99")
+	}
+}
+func BenchmarkGet2(b *testing.B) {
+	os.Remove("test.db")
+	os.Remove("test.db.lock")
+	defer os.Remove("test.db")
+	fs, _ := New("test.db")
+	for i := 0; i < 100; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+	fs.startTransaction(true)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fs.getAllFromPreparedQuery(`
+		SELECT * FROM fs WHERE name = ?`, "test99")
+	}
+	fs.finishTransaction()
+}
 
 func TestBasic(t *testing.T) {
 	os.Remove("test.db")
@@ -13,7 +59,7 @@ func TestBasic(t *testing.T) {
 	fs, err := New("test.db")
 	assert.Nil(t, err)
 
-	err = fs.startTransaction()
+	err = fs.startTransaction(false)
 	assert.Nil(t, err)
 	err = fs.finishTransaction()
 	assert.Nil(t, err)
@@ -23,7 +69,7 @@ func TestBasic(t *testing.T) {
 	err = fs.Save(f)
 	assert.Nil(t, err)
 
-	f2, err := fs.Open("test1")
+	f2, err := fs.Get("test1")
 	assert.Equal(t, f.Data, f2.Data)
 	assert.Nil(t, err)
 
@@ -36,4 +82,25 @@ func TestBasic(t *testing.T) {
 
 	err = fs.DumpSQL()
 	assert.Nil(t, err)
+}
+
+func TestConcurrency(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(200)
+	for i := 0; i < 200; i++ {
+		go func() {
+			defer wg.Done()
+			fs, err := New("test.db")
+			assert.Nil(t, err)
+			start := time.Now()
+			for {
+				_, err = fs.Get("test1")
+				assert.Nil(t, err)
+				if time.Since(start) > 1*time.Second {
+					break
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

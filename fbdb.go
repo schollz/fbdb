@@ -19,10 +19,11 @@ type FileSystem struct {
 	encryptPassphrase string
 	doCompression     bool
 
-	db       *sql.DB
-	filelock *golock.Lock
-	isOpen   bool
-	isClosed bool
+	db         *sql.DB
+	dbReadonly *sql.DB
+	filelock   *golock.Lock
+	isOpen     bool
+	isClosed   bool
 
 	sync.RWMutex
 }
@@ -91,17 +92,21 @@ func New(name string, options ...Option) (fs *FileSystem, err error) {
 }
 
 func (fs *FileSystem) finishTransaction() (err error) {
-	fs.db.Close()
+	if fs.db != nil {
+		fs.db.Close()
+	}
 	fs.filelock.Unlock()
 	return
 }
 
-func (fs *FileSystem) startTransaction() (err error) {
-	// obtain a lock on the database
-	err = fs.filelock.Lock()
-	if err != nil {
-		err = errors.Wrap(err, "could not get lock")
-		return
+func (fs *FileSystem) startTransaction(readonly bool) (err error) {
+	if !readonly {
+		// obtain a lock on the database if we are going to be writing
+		err = fs.filelock.Lock()
+		if err != nil {
+			err = errors.Wrap(err, "could not get lock")
+			return
+		}
 	}
 
 	// check if it is a new database
@@ -111,7 +116,11 @@ func (fs *FileSystem) startTransaction() (err error) {
 	}
 
 	// open sqlite3 database
-	fs.db, err = sql.Open("sqlite3", fs.name)
+	if readonly {
+		fs.db, err = sql.Open("sqlite3", fs.name)
+	} else {
+		fs.db, err = sql.Open("sqlite3", fs.name)
+	}
 	if err != nil {
 		err = errors.Wrap(err, "could not open sqlite3 db")
 		return
@@ -119,6 +128,10 @@ func (fs *FileSystem) startTransaction() (err error) {
 
 	// create new database tables if needed
 	if newDatabase {
+		if readonly {
+			err = errors.New("cannot make database for read only")
+			return
+		}
 		err = fs.initializeDB()
 		if err != nil {
 			err = errors.Wrap(err, "could not initialize")
@@ -214,7 +227,7 @@ func (fs *FileSystem) Save(f File) (err error) {
 	defer fs.Unlock()
 
 	defer fs.finishTransaction()
-	err = fs.startTransaction()
+	err = fs.startTransaction(false)
 	if err != nil {
 		return
 	}
@@ -288,13 +301,13 @@ func (fs *FileSystem) Close() (err error) {
 	return fs.finishTransaction()
 }
 
-// Open returns the info from a file
-func (fs *FileSystem) Open(name string) (f File, err error) {
+// Get returns the info from a file
+func (fs *FileSystem) Get(name string) (f File, err error) {
 	fs.Lock()
 	defer fs.Unlock()
 
 	defer fs.finishTransaction()
-	err = fs.startTransaction()
+	err = fs.startTransaction(true)
 	if err != nil {
 		return
 	}
@@ -317,7 +330,6 @@ func (fs *FileSystem) Open(name string) (f File, err error) {
 
 	// TODO
 	// decryption
-
 	return
 }
 
@@ -327,7 +339,7 @@ func (fs *FileSystem) Exists(name string) (exists bool, err error) {
 	defer fs.Unlock()
 
 	defer fs.finishTransaction()
-	err = fs.startTransaction()
+	err = fs.startTransaction(true)
 	if err != nil {
 		return
 	}
