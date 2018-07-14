@@ -22,9 +22,7 @@ type FileSystem struct {
 	db         *sql.DB
 	dbReadonly *sql.DB
 	filelock   *golock.Lock
-	isOpen     bool
-	isClosed   bool
-
+	isLocked   bool
 	sync.RWMutex
 }
 
@@ -301,6 +299,75 @@ func (fs *FileSystem) Close() (err error) {
 	return fs.finishTransaction()
 }
 
+// GetI returns the ith thing
+func (fs *FileSystem) GetI(i int) (f File, err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
+	defer fs.finishTransaction()
+	err = fs.startTransaction(true)
+	if err != nil {
+		return
+	}
+
+	files, err := fs.getAllFromPreparedQuery(`
+		SELECT * FROM fs LIMIT 1 OFFSET ?`, i)
+	if err != nil {
+		err = errors.Wrap(err, "Stat")
+	}
+	if len(files) == 0 {
+		err = errors.New("no files")
+	} else {
+		f = files[0]
+	}
+
+	if f.IsCompressed {
+		f.Data = decompressByte(f.Data)
+		f.Size = len(f.Data)
+	}
+	return
+}
+
+func (fs *FileSystem) Len() (l int, err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
+	defer fs.finishTransaction()
+	err = fs.startTransaction(true)
+	if err != nil {
+		return
+	}
+	// prepare statement
+	query := "SELECT COUNT(name) FROM FS"
+	stmt, err := fs.db.Prepare(query)
+	if err != nil {
+		err = errors.Wrap(err, "preparing query: "+query)
+		return
+	}
+
+	defer stmt.Close()
+	rows, err := stmt.Query()
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+
+	// loop through rows
+	defer rows.Close()
+	for rows.Next() {
+		err = rows.Scan(&l)
+		if err != nil {
+			err = errors.Wrap(err, "getRows")
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		err = errors.Wrap(err, "getRows")
+	}
+	return
+}
+
 // Get returns the info from a file
 func (fs *FileSystem) Get(name string) (f File, err error) {
 	fs.Lock()
@@ -396,6 +463,56 @@ func (fs *FileSystem) getAllFromPreparedQuery(query string, args ...interface{})
 	err = rows.Err()
 	if err != nil {
 		err = errors.Wrap(err, "getRows")
+	}
+	return
+}
+
+func (fs *FileSystem) ManualStart() (err error) {
+	fs.db, err = sql.Open("sqlite3", fs.name)
+	if err != nil {
+		err = errors.Wrap(err, "could not open sqlite3 db")
+		return
+	}
+	return
+}
+
+func (fs *FileSystem) ManualStop() (err error) {
+	return fs.db.Close()
+}
+
+func (fs *FileSystem) ManualGet(name string) (f File, err error) {
+	files, err := fs.getAllFromPreparedQuery(`
+		SELECT * FROM fs WHERE name = ?`, name)
+	if err != nil {
+		err = errors.Wrap(err, "Stat")
+	}
+	if len(files) == 0 {
+		err = errors.New("no files with that name")
+	} else {
+		f = files[0]
+	}
+
+	if f.IsCompressed {
+		f.Data = decompressByte(f.Data)
+		f.Size = len(f.Data)
+	}
+	return
+}
+
+func (fs *FileSystem) ManualGetI(i int) (f File, err error) {
+	files, err := fs.getAllFromPreparedQuery(`SELECT * FROM fs LIMIT 1 OFFSET ?`, i)
+	if err != nil {
+		err = errors.Wrap(err, "Stat")
+	}
+	if len(files) == 0 {
+		err = errors.New("no files")
+	} else {
+		f = files[0]
+	}
+
+	if f.IsCompressed {
+		f.Data = decompressByte(f.Data)
+		f.Size = len(f.Data)
 	}
 	return
 }
