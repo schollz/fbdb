@@ -48,13 +48,6 @@ type File struct {
 // Option is the type all options need to adhere to
 type Option func(fs *FileSystem)
 
-// OptionReadOnly sets twhether to open as read only
-func OptionReadOnly(readOnly bool) Option {
-	return func(fs *FileSystem) {
-		fs.readOnly = readOnly
-	}
-}
-
 // OptionCompress sets compression on
 func OptionCompress(compress bool) Option {
 	return func(fs *FileSystem) {
@@ -76,9 +69,17 @@ func New(name string, options ...Option) (fs *FileSystem, err error) {
 	}
 
 	// if read-only, make sure the database exists
-	if _, errExists := os.Stat(fs.name); errExists != nil && fs.readOnly {
-		err = errors.New("cannot open as read-only if it does not exist")
-		return
+	if _, errExists := os.Stat(fs.name); errExists != nil {
+		fs.db, err = sql.Open("sqlite3", fs.name)
+		if err != nil {
+			return
+		}
+		err = fs.initializeDB()
+		if err != nil {
+			err = errors.Wrap(err, "could not initialize")
+			return
+		}
+		fs.db.Close()
 	}
 
 	fs.filelock = golock.New(
@@ -107,12 +108,6 @@ func (fs *FileSystem) startTransaction(readonly bool) (err error) {
 		}
 	}
 
-	// check if it is a new database
-	newDatabase := false
-	if _, errExists := os.Stat(fs.name); os.IsNotExist(errExists) {
-		newDatabase = true
-	}
-
 	// open sqlite3 database
 	if readonly {
 		fs.db, err = sql.Open("sqlite3", fs.name)
@@ -124,18 +119,6 @@ func (fs *FileSystem) startTransaction(readonly bool) (err error) {
 		return
 	}
 
-	// create new database tables if needed
-	if newDatabase {
-		if readonly {
-			err = errors.New("cannot make database for read only")
-			return
-		}
-		err = fs.initializeDB()
-		if err != nil {
-			err = errors.Wrap(err, "could not initialize")
-			return
-		}
-	}
 	return
 }
 
