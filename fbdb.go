@@ -373,6 +373,12 @@ func (fs *FileSystem) Get(name string) (f File, err error) {
 		f = files[0]
 	}
 
+	ProcessFile(&f)
+
+	return
+}
+
+func ProcessFile(f *File) {
 	if f.IsCompressed {
 		f.Data = decompressByte(f.Data)
 		f.Size = len(f.Data)
@@ -380,7 +386,7 @@ func (fs *FileSystem) Get(name string) (f File, err error) {
 
 	// TODO
 	// decryption
-	return
+
 }
 
 // Exists returns whether specified file exists
