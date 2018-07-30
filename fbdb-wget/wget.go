@@ -183,7 +183,7 @@ RestartTor:
 			if resp.StatusCode == 503 || resp.StatusCode == 403 {
 				err = fmt.Errorf("received %d code", resp.StatusCode)
 				if w.userTor {
-					err = errors.New("restart tor")
+					err = errors.Wrap(err, "restart tor")
 				}
 				return
 			}
@@ -210,7 +210,7 @@ RestartTor:
 			url: j.url,
 			err: err,
 		}
-		if err != nil && err.Error() == "restart tor" {
+		if err != nil && strings.Contains(err.Error(), "restart tor") {
 			goto RestartTor
 		}
 	}
