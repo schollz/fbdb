@@ -34,6 +34,7 @@ func main() {
 		cli.BoolFlag{Name: "tor"},
 		cli.BoolFlag{Name: "no-clobber,nc"},
 		cli.StringFlag{Name: "list,i"},
+		cli.StringFlag{Name: "cookies,c"},
 		cli.BoolFlag{Name: "compress"},
 		cli.BoolFlag{Name: "debug,d"},
 		cli.BoolFlag{Name: "quiet,q"},
@@ -59,6 +60,7 @@ func main() {
 		w.userTor = c.GlobalBool("tor")
 		w.compressResults = c.GlobalBool("compress")
 		w.numWorkers = c.GlobalInt("workers")
+		w.cookies = c.GlobalString("cookies")
 		if w.numWorkers < 1 {
 			return errors.New("cannot have less than 1 worker")
 		}
@@ -77,6 +79,7 @@ type wget struct {
 	noClobber       bool
 	fileWithList    string
 	url             string
+	cookies         string
 	compressResults bool
 	numWorkers      int
 	torconnection   []*tor.Tor
@@ -165,6 +168,9 @@ RestartTor:
 			if err != nil {
 				err = errors.Wrap(err, "bad request")
 				return
+			}
+			if w.cookies != "" {
+				req.Header.Set("Cookie", w.cookies)
 			}
 			resp, err := httpClient.Do(req)
 			if err != nil && resp == nil {
