@@ -218,6 +218,9 @@ RestartTor:
 				}
 				body = []byte(plucker.ResultJSON())
 				log.Debugf("body: %s", body)
+				if !bytes.Contains(body, []byte("{")) {
+					return fmt.Errorf("could not get anything")
+				}
 			}
 
 			// save
