@@ -36,6 +36,7 @@ func main() {
 		cli.BoolFlag{Name: "no-clobber,nc"},
 		cli.StringFlag{Name: "list,i"},
 		cli.StringFlag{Name: "pluck,p", Usage: "file for plucking"},
+		cli.StringFlag{Name: "cookies,c"},
 		cli.BoolFlag{Name: "compress"},
 		cli.BoolFlag{Name: "debug,d"},
 		cli.BoolFlag{Name: "quiet,q"},
@@ -61,6 +62,7 @@ func main() {
 		w.userTor = c.GlobalBool("tor")
 		w.compressResults = c.GlobalBool("compress")
 		w.numWorkers = c.GlobalInt("workers")
+		w.cookies = c.GlobalString("cookies")
 		if w.numWorkers < 1 {
 			return errors.New("cannot have less than 1 worker")
 		}
@@ -86,6 +88,7 @@ type wget struct {
 	noClobber       bool
 	fileWithList    string
 	url             string
+	cookies         string
 	compressResults bool
 	numWorkers      int
 	pluckerTOML     string
@@ -176,6 +179,9 @@ RestartTor:
 				err = errors.Wrap(err, "bad request")
 				return
 			}
+			if w.cookies != "" {
+				req.Header.Set("Cookie", w.cookies)
+			}
 			resp, err := httpClient.Do(req)
 			if err != nil && resp == nil {
 				err = errors.Wrap(err, "bad do")
@@ -187,7 +193,7 @@ RestartTor:
 			if resp.StatusCode == 503 || resp.StatusCode == 403 {
 				err = fmt.Errorf("received %d code", resp.StatusCode)
 				if w.userTor {
-					err = errors.New("restart tor")
+					err = errors.Wrap(err, "restart tor")
 				}
 				return
 			}
@@ -229,7 +235,7 @@ RestartTor:
 			url: j.url,
 			err: err,
 		}
-		if err != nil && err.Error() == "restart tor" {
+		if err != nil && strings.Contains(err.Error(), "restart tor") {
 			goto RestartTor
 		}
 	}
