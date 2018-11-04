@@ -17,6 +17,7 @@ import (
 	"github.com/cretz/bine/tor"
 	"github.com/pkg/errors"
 	"github.com/schollz/fbdb"
+	"github.com/schollz/pluck/pluck"
 	"github.com/urfave/cli"
 )
 
@@ -34,6 +35,7 @@ func main() {
 		cli.BoolFlag{Name: "tor"},
 		cli.BoolFlag{Name: "no-clobber,nc"},
 		cli.StringFlag{Name: "list,i"},
+		cli.StringFlag{Name: "pluck,p", Usage: "file for plucking"},
 		cli.BoolFlag{Name: "compress"},
 		cli.BoolFlag{Name: "debug,d"},
 		cli.BoolFlag{Name: "quiet,q"},
@@ -62,6 +64,13 @@ func main() {
 		if w.numWorkers < 1 {
 			return errors.New("cannot have less than 1 worker")
 		}
+		if c.GlobalString("pluck") != "" {
+			b, err := ioutil.ReadFile(c.GlobalString("pluck"))
+			if err != nil {
+				return err
+			}
+			w.pluckerTOML = string(b)
+		}
 		return w.start()
 	}
 
@@ -79,6 +88,7 @@ type wget struct {
 	url             string
 	compressResults bool
 	numWorkers      int
+	pluckerTOML     string
 	torconnection   []*tor.Tor
 	fs              *fbdb.FileSystem
 }
@@ -187,6 +197,21 @@ RestartTor:
 			body, err := ioutil.ReadAll(resp.Body)
 			if err != nil {
 				return
+			}
+
+			if w.pluckerTOML != "" {
+				plucker, _ := pluck.New()
+				r := bufio.NewReader(bytes.NewReader(body))
+				err = plucker.LoadFromString(w.pluckerTOML)
+				if err != nil {
+					return err
+				}
+				err = plucker.PluckStream(r)
+				if err != nil {
+					return
+				}
+				body = []byte(plucker.ResultJSON())
+				log.Debugf("body: %s", body)
 			}
 
 			// save
