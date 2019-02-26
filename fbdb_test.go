@@ -1,7 +1,6 @@
 package fbdb
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -70,7 +69,7 @@ func TestEmiting(t *testing.T) {
 		if !more {
 			break
 		}
-		fmt.Println(f)
+		assert.Equal(t, []byte("aslkdfjaklsdf"), f.Data)
 	}
 }
 

@@ -312,6 +312,7 @@ func (fs *FileSystem) GetI(i int) (f File, err error) {
 	return
 }
 
+// Len returns a number for a query, typically "SELECT COUNT(name) FROM fs"
 func (fs *FileSystem) Len(queryCustom ...string) (l int, err error) {
 	fs.Lock()
 	defer fs.Unlock()
