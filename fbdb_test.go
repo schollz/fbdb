@@ -1,6 +1,7 @@
 package fbdb
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -51,6 +52,26 @@ func BenchmarkGet2(b *testing.B) {
 		SELECT * FROM fs WHERE name = ?`, "test99")
 	}
 	fs.finishTransaction()
+}
+
+func TestEmiting(t *testing.T) {
+	fs, _ := New("test.db")
+	for i := 0; i < 100; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+	files := make(chan File, 1)
+	go func() {
+		err := fs.GetChannel(files, "SELECT * FROM fs LIMIT ?", 50)
+		assert.Nil(t, err)
+	}()
+	for {
+		f, more := <-files
+		if !more {
+			break
+		}
+		fmt.Println(f)
+	}
 }
 
 func TestBasic(t *testing.T) {

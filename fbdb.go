@@ -173,6 +173,7 @@ func (fs *FileSystem) DumpSQL() (err error) {
 		return
 	}
 	err = sqlite3dump.Dump(fs.name, dumpFile)
+	dumpFile.Close()
 	return
 }
 
@@ -408,6 +409,65 @@ func (fs *FileSystem) Exists(name string) (exists bool, err error) {
 	if len(files) > 0 {
 		exists = true
 	}
+	return
+}
+
+// CustomGet will get any query and emit a function with it
+func (fs *FileSystem) GetChannel(files chan<- File, query string, args ...interface{}) (err error) {
+	fs.Lock()
+	defer fs.Unlock()
+
+	defer fs.finishTransaction()
+	err = fs.startTransaction(true)
+	if err != nil {
+		return
+	}
+
+	// prepare statement
+	stmt, err := fs.db.Prepare(query)
+	if err != nil {
+		err = errors.Wrap(err, "preparing query: "+query)
+		return
+	}
+
+	defer stmt.Close()
+	rows, err := stmt.Query(args...)
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+
+	// loop through rows
+	defer rows.Close()
+	for rows.Next() {
+		var f File
+		err = rows.Scan(
+			&f.Name,
+			&f.Permissions,
+			&f.UserID,
+			&f.GroupID,
+			&f.Size,
+			&f.Created,
+			&f.Modified,
+			&f.Data,
+			&f.IsCompressed,
+			&f.IsEncrypted,
+		)
+		if err != nil {
+			err = errors.Wrap(err, "getRows")
+			return
+		}
+		if f.IsCompressed {
+			f.Data = decompressByte(f.Data)
+			f.Size = len(f.Data)
+		}
+		files <- f
+	}
+	err = rows.Err()
+	if err != nil {
+		err = errors.Wrap(err, "getRows")
+	}
+	close(files)
 	return
 }
 
