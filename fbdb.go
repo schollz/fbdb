@@ -312,7 +312,7 @@ func (fs *FileSystem) GetI(i int) (f File, err error) {
 	return
 }
 
-func (fs *FileSystem) Len() (l int, err error) {
+func (fs *FileSystem) Len(queryCustom ...string) (l int, err error) {
 	fs.Lock()
 	defer fs.Unlock()
 
@@ -323,6 +323,9 @@ func (fs *FileSystem) Len() (l int, err error) {
 	}
 	// prepare statement
 	query := "SELECT COUNT(name) FROM FS"
+	if len(queryCustom) > 0 {
+		query = queryCustom[0]
+	}
 	stmt, err := fs.db.Prepare(query)
 	if err != nil {
 		err = errors.Wrap(err, "preparing query: "+query)
