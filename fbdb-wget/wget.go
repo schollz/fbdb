@@ -32,6 +32,7 @@ func main() {
 	app.Usage = "similar to wget, but write to database"
 	app.UsageText = "fbdb-wget [options] [url]"
 	app.Flags = []cli.Flag{
+		cli.StringSliceFlag{Name: "headers,H", Usage: "headers to include"},
 		cli.BoolFlag{Name: "tor"},
 		cli.BoolFlag{Name: "no-clobber,nc"},
 		cli.StringFlag{Name: "list,i"},
@@ -58,6 +59,7 @@ func main() {
 		} else {
 			setLogLevel("info")
 		}
+		w.headers = c.GlobalStringSlice("headers")
 		w.noClobber = c.GlobalBool("no-clobber")
 		w.userTor = c.GlobalBool("tor")
 		w.compressResults = c.GlobalBool("compress")
@@ -89,6 +91,7 @@ type wget struct {
 	fileWithList    string
 	url             string
 	cookies         string
+	headers         []string
 	compressResults bool
 	numWorkers      int
 	pluckerTOML     string
@@ -178,6 +181,14 @@ RestartTor:
 			if err != nil {
 				err = errors.Wrap(err, "bad request")
 				return
+			}
+			if len(w.headers) > 0 {
+				for _, header := range w.headers {
+					if strings.Contains(header, ":") {
+						hs := strings.Split(header, ":")
+						req.Header.Set(strings.TrimSpace(hs[0]), strings.TrimSpace(hs[1]))
+					}
+				}
 			}
 			if w.cookies != "" {
 				req.Header.Set("Cookie", w.cookies)
