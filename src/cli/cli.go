@@ -79,7 +79,7 @@ func Run() (err error) {
 				cli.StringFlag{Name: "list,i"},
 				cli.StringFlag{Name: "pluck,p", Usage: "file for plucking"},
 				cli.StringFlag{Name: "cookies,c"},
-				cli.BoolFlag{Name: "compress"},
+				cli.BoolFlag{Name: "compressed"},
 				cli.BoolFlag{Name: "quiet,q"},
 				cli.IntFlag{Name: "workers,w", Value: 1},
 			},
