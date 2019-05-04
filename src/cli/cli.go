@@ -5,11 +5,13 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	log "github.com/cihub/seelog"
 	"github.com/schollz/fbdb/src/fbdb"
 	"github.com/schollz/fbdb/src/get"
+	"github.com/schollz/progressbar/v2"
 	"github.com/urfave/cli"
 )
 
@@ -162,18 +164,23 @@ func dump(c *cli.Context) (err error) {
 	if err != nil {
 		return
 	}
+	bar := progressbar.NewOptions(numFiles,
+		progressbar.OptionShowCount(),
+		progressbar.OptionShowIts(),
+	)
 	for i := 0; i < numFiles; i++ {
+		bar.Add(1)
 		var f fbdb.File
 		f, err = fs.GetI(i)
 		if err != nil {
 			return
 		}
-		pathname, filename := path.Split(f.Name)
+		pathname, filename := path.Split(strings.TrimSuffix(strings.TrimSpace(f.Name), "/"))
 		os.MkdirAll(pathname, 0755)
-		log.Debug(pathname, filename)
 		err = ioutil.WriteFile(path.Join(pathname, filename), f.Data, 0644)
 		if err != nil {
-			return
+			log.Error(err)
+			continue
 		}
 	}
 	return

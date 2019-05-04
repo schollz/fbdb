@@ -11,6 +11,7 @@ require (
 	github.com/pkg/errors v0.8.1
 	github.com/schollz/golock v1.0.1
 	github.com/schollz/pluck v1.1.3
+	github.com/schollz/progressbar/v2 v2.12.1
 	github.com/schollz/sqlite3dump v1.2.3
 	github.com/sirupsen/logrus v1.4.1 // indirect
 	github.com/stretchr/objx v0.2.0 // indirect
