@@ -17,6 +17,8 @@ $ go get -v github.com/schollz/fbdb
 
 ## Usage 
 
+### Basic usage
+
 It should be compatible with Firefox's "Copy as cURL", just replace `curl` with `fbdb get`. By default it will save the data in a database, `urls.db`.
 
 ```
