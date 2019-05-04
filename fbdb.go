@@ -1,14 +1,16 @@
 package fbdb
 
 import (
+	"bytes"
+	"compress/flate"
 	"database/sql"
+	"io"
 	"os"
 	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/pkg/errors"
-	"github.com/schollz/golock"
 	"github.com/schollz/sqlite3dump"
 )
 
@@ -19,10 +21,7 @@ type FileSystem struct {
 	encryptPassphrase string
 	doCompression     bool
 
-	db         *sql.DB
-	dbReadonly *sql.DB
-	filelock   *golock.Lock
-	isLocked   bool
+	db *sql.DB
 	sync.RWMutex
 }
 
@@ -55,8 +54,8 @@ func OptionCompress(compress bool) Option {
 	}
 }
 
-// New will initialize a filesystem
-func New(name string, options ...Option) (fs *FileSystem, err error) {
+// Open will open  a filesystem-based database
+func Open(name string, options ...Option) (fs *FileSystem, err error) {
 	fs = new(FileSystem)
 	if name == "" {
 		err = errors.New("database must have name")
@@ -77,90 +76,17 @@ func New(name string, options ...Option) (fs *FileSystem, err error) {
 		err = fs.initializeDB()
 		if err != nil {
 			err = errors.Wrap(err, "could not initialize")
-			return
 		}
-		fs.db.Close()
-	}
-
-	fs.filelock = golock.New(
-		golock.OptionSetName(fs.name+".lock"),
-		golock.OptionSetInterval(1*time.Millisecond),
-		golock.OptionSetTimeout(30*time.Second),
-	)
-	return
-}
-
-func (fs *FileSystem) finishTransaction() (err error) {
-	if fs.db != nil {
-		fs.db.Close()
-	}
-	fs.filelock.Unlock()
-	return
-}
-
-func (fs *FileSystem) startTransaction(readonly bool) (err error) {
-	if !readonly {
-		// obtain a lock on the database if we are going to be writing
-		err = fs.filelock.Lock()
-		if err != nil {
-			err = errors.Wrap(err, "could not get lock")
-			return
-		}
-	}
-
-	// open sqlite3 database
-	if readonly {
-		fs.db, err = sql.Open("sqlite3", fs.name)
 	} else {
 		fs.db, err = sql.Open("sqlite3", fs.name)
 	}
-	if err != nil {
-		err = errors.Wrap(err, "could not open sqlite3 db")
-		return
-	}
 
 	return
 }
 
-func (fs *FileSystem) initializeDB() (err error) {
-	sqlStmt := `CREATE TABLE 
-		fs (
-			name TEXT NOT NULL PRIMARY KEY, 
-			permissions INTEGER,
-			user_id INTEGER,
-			group_id INTEGER,
-			size INTEGER,
-			created TIMESTAMP,
-			modified TIMESTAMP,
-			data BLOB,
-			compressed INTEGER,
-			encrypted INTEGER
-		);`
-	_, err = fs.db.Exec(sqlStmt)
-	if err != nil {
-		err = errors.Wrap(err, "creating table")
-	}
-
-	sqlStmt = `CREATE TABLE 
-	users (
-		id INTEGER NOT NULL PRIMARY KEY, 
-		name TEXT
-	);`
-	_, err = fs.db.Exec(sqlStmt)
-	if err != nil {
-		err = errors.Wrap(err, "creating table")
-	}
-
-	sqlStmt = `CREATE TABLE 
-groups (
-	id INTEGER NOT NULL PRIMARY KEY, 
-	name TEXT
-);`
-	_, err = fs.db.Exec(sqlStmt)
-	if err != nil {
-		err = errors.Wrap(err, "creating table")
-	}
-	return
+// Close will close the database
+func (fs *FileSystem) Close() (err error) {
+	return fs.db.Close()
 }
 
 // DumpSQL will dump the SQL as text to filename.sql
@@ -179,8 +105,6 @@ func (fs *FileSystem) DumpSQL() (err error) {
 
 // NewFile returns a new file
 func (fs *FileSystem) NewFile(name string, data []byte) (f File, err error) {
-	fs.Lock()
-	defer fs.Unlock()
 	f = File{
 		Name:        name,
 		Permissions: os.FileMode(0644),
@@ -207,12 +131,6 @@ func (fs *FileSystem) NewFile(name string, data []byte) (f File, err error) {
 func (fs *FileSystem) Save(f File) (err error) {
 	fs.Lock()
 	defer fs.Unlock()
-
-	defer fs.finishTransaction()
-	err = fs.startTransaction(false)
-	if err != nil {
-		return
-	}
 
 	tx, err := fs.db.Begin()
 	if err != nil {
@@ -275,25 +193,8 @@ func (fs *FileSystem) Save(f File) (err error) {
 
 }
 
-// Close will make sure that the lock file is closed
-func (fs *FileSystem) Close() (err error) {
-	fs.Lock()
-	defer fs.Unlock()
-
-	return fs.finishTransaction()
-}
-
 // GetI returns the ith thing
 func (fs *FileSystem) GetI(i int) (f File, err error) {
-	fs.Lock()
-	defer fs.Unlock()
-
-	defer fs.finishTransaction()
-	err = fs.startTransaction(true)
-	if err != nil {
-		return
-	}
-
 	files, err := fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs LIMIT 1 OFFSET ?`, i)
 	if err != nil {
@@ -314,14 +215,6 @@ func (fs *FileSystem) GetI(i int) (f File, err error) {
 
 // Len returns a number for a query, typically "SELECT COUNT(name) FROM fs"
 func (fs *FileSystem) Len(queryCustom ...string) (l int, err error) {
-	fs.Lock()
-	defer fs.Unlock()
-
-	defer fs.finishTransaction()
-	err = fs.startTransaction(true)
-	if err != nil {
-		return
-	}
 	// prepare statement
 	query := "SELECT COUNT(name) FROM FS"
 	if len(queryCustom) > 0 {
@@ -358,15 +251,6 @@ func (fs *FileSystem) Len(queryCustom ...string) (l int, err error) {
 
 // Get returns the info from a file
 func (fs *FileSystem) Get(name string) (f File, err error) {
-	fs.Lock()
-	defer fs.Unlock()
-
-	defer fs.finishTransaction()
-	err = fs.startTransaction(true)
-	if err != nil {
-		return
-	}
-
 	files, err := fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs WHERE name = ?`, name)
 	if err != nil {
@@ -383,7 +267,7 @@ func (fs *FileSystem) Get(name string) (f File, err error) {
 	return
 }
 
-func ProcessFile(f *File) {
+func ProcessFile(f *File) (err error) {
 	if f.IsCompressed {
 		f.Data = decompressByte(f.Data)
 		f.Size = len(f.Data)
@@ -391,20 +275,11 @@ func ProcessFile(f *File) {
 
 	// TODO
 	// decryption
-
+	return
 }
 
 // Exists returns whether specified file exists
 func (fs *FileSystem) Exists(name string) (exists bool, err error) {
-	fs.Lock()
-	defer fs.Unlock()
-
-	defer fs.finishTransaction()
-	err = fs.startTransaction(true)
-	if err != nil {
-		return
-	}
-
 	files, err := fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs WHERE name = ?`, name)
 	if err != nil {
@@ -417,62 +292,70 @@ func (fs *FileSystem) Exists(name string) (exists bool, err error) {
 }
 
 // CustomGet will get any query and emit a function with it
-func (fs *FileSystem) GetChannel(files chan<- File, query string, args ...interface{}) (err error) {
-	fs.Lock()
-	defer fs.Unlock()
+func (fs *FileSystem) Pipeline(done <-chan struct{}, query string, args ...interface{}) (<-chan File, <-chan error) {
+	out := make(chan File)
+	outerr := make(chan error)
 
-	defer fs.finishTransaction()
-	err = fs.startTransaction(true)
-	if err != nil {
-		return
-	}
-
-	// prepare statement
-	stmt, err := fs.db.Prepare(query)
-	if err != nil {
-		err = errors.Wrap(err, "preparing query: "+query)
-		return
-	}
-
-	defer stmt.Close()
-	rows, err := stmt.Query(args...)
-	if err != nil {
-		err = errors.Wrap(err, query)
-		return
-	}
-
-	// loop through rows
-	defer rows.Close()
-	for rows.Next() {
-		var f File
-		err = rows.Scan(
-			&f.Name,
-			&f.Permissions,
-			&f.UserID,
-			&f.GroupID,
-			&f.Size,
-			&f.Created,
-			&f.Modified,
-			&f.Data,
-			&f.IsCompressed,
-			&f.IsEncrypted,
-		)
+	go func() {
+		// defer func() {
+		// 	fmt.Println("closed")
+		// }()
+		defer close(out)
+		defer close(outerr)
+		// prepare statement
+		stmt, err := fs.db.Prepare(query)
 		if err != nil {
-			err = errors.Wrap(err, "getRows")
+			outerr <- errors.Wrap(err, "preparing query: "+query)
 			return
 		}
-		if f.IsCompressed {
-			f.Data = decompressByte(f.Data)
-			f.Size = len(f.Data)
+
+		defer stmt.Close()
+		rows, err := stmt.Query(args...)
+		if err != nil {
+			outerr <- errors.Wrap(err, query)
+			return
 		}
-		files <- f
-	}
-	err = rows.Err()
-	if err != nil {
-		err = errors.Wrap(err, "getRows")
-	}
-	close(files)
-	return
+
+		// loop through rows
+		defer rows.Close()
+		for rows.Next() {
+			var f File
+			err = rows.Scan(
+				&f.Name,
+				&f.Permissions,
+				&f.UserID,
+				&f.GroupID,
+				&f.Size,
+				&f.Created,
+				&f.Modified,
+				&f.Data,
+				&f.IsCompressed,
+				&f.IsEncrypted,
+			)
+			if err != nil {
+				outerr <- errors.Wrap(err, "getRows")
+				return
+			}
+			if f.IsCompressed {
+				f.Data = decompressByte(f.Data)
+				f.Size = len(f.Data)
+			}
+
+			select {
+			case out <- f:
+			case <-done:
+				// fmt.Println("returning early")
+				return
+			}
+		}
+		err = rows.Err()
+		if err != nil {
+			outerr <- errors.Wrap(err, "getRows")
+		}
+
+	}()
+
+	return out, outerr
 }
 
 func (fs *FileSystem) getAllFromPreparedQuery(query string, args ...interface{}) (files []File, err error) {
@@ -520,52 +403,72 @@ func (fs *FileSystem) getAllFromPreparedQuery(query string, args ...interface{})
 	return
 }
 
-func (fs *FileSystem) ManualStart() (err error) {
-	fs.db, err = sql.Open("sqlite3", fs.name)
+func (fs *FileSystem) initializeDB() (err error) {
+	sqlStmt := `CREATE TABLE 
+		fs (
+			name TEXT NOT NULL PRIMARY KEY, 
+			permissions INTEGER,
+			user_id INTEGER,
+			group_id INTEGER,
+			size INTEGER,
+			created TIMESTAMP,
+			modified TIMESTAMP,
+			data BLOB,
+			compressed INTEGER,
+			encrypted INTEGER
+		);`
+	_, err = fs.db.Exec(sqlStmt)
 	if err != nil {
-		err = errors.Wrap(err, "could not open sqlite3 db")
-		return
+		err = errors.Wrap(err, "creating table")
+	}
+
+	sqlStmt = `CREATE TABLE 
+	users (
+		id INTEGER NOT NULL PRIMARY KEY, 
+		name TEXT
+	);`
+	_, err = fs.db.Exec(sqlStmt)
+	if err != nil {
+		err = errors.Wrap(err, "creating table")
+	}
+
+	sqlStmt = `CREATE TABLE 
+groups (
+	id INTEGER NOT NULL PRIMARY KEY, 
+	name TEXT
+);`
+	_, err = fs.db.Exec(sqlStmt)
+	if err != nil {
+		err = errors.Wrap(err, "creating table")
 	}
 	return
 }
 
-func (fs *FileSystem) ManualStop() (err error) {
-	return fs.db.Close()
+// compressByte returns a compressed byte slice.
+func compressByte(src []byte) []byte {
+	compressedData := new(bytes.Buffer)
+	compress(src, compressedData, 9)
+	return compressedData.Bytes()
 }
 
-func (fs *FileSystem) ManualGet(name string) (f File, err error) {
-	files, err := fs.getAllFromPreparedQuery(`
-		SELECT * FROM fs WHERE name = ?`, name)
-	if err != nil {
-		err = errors.Wrap(err, "Stat")
-	}
-	if len(files) == 0 {
-		err = errors.New("no files with that name")
-	} else {
-		f = files[0]
-	}
-
-	if f.IsCompressed {
-		f.Data = decompressByte(f.Data)
-		f.Size = len(f.Data)
-	}
-	return
+// decompressByte returns a decompressed byte slice.
+func decompressByte(src []byte) []byte {
+	compressedData := bytes.NewBuffer(src)
+	deCompressedData := new(bytes.Buffer)
+	decompress(compressedData, deCompressedData)
+	return deCompressedData.Bytes()
 }
 
-func (fs *FileSystem) ManualGetI(i int) (f File, err error) {
-	files, err := fs.getAllFromPreparedQuery(`SELECT * FROM fs LIMIT 1 OFFSET ?`, i)
-	if err != nil {
-		err = errors.Wrap(err, "Stat")
-	}
-	if len(files) == 0 {
-		err = errors.New("no files")
-	} else {
-		f = files[0]
-	}
+// compress uses flate to compress a byte slice to a corresponding level
+func compress(src []byte, dest io.Writer, level int) {
+	compressor, _ := flate.NewWriter(dest, level)
+	compressor.Write(src)
+	compressor.Close()
+}
 
-	if f.IsCompressed {
-		f.Data = decompressByte(f.Data)
-		f.Size = len(f.Data)
-	}
-	return
+// compress uses flate to decompress an io.Reader
+func decompress(src io.Reader, dest io.Writer) {
+	decompressor := flate.NewReader(src)
+	io.Copy(dest, decompressor)
+	decompressor.Close()
 }

@@ -1,8 +1,10 @@
 package fbdb
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +16,7 @@ func BenchmarkNewFile(b *testing.B) {
 	os.Remove("test.db")
 	os.Remove("test.db.lock")
 	defer os.Remove("test.db")
-	fs, _ := New("test.db")
+	fs, _ := Open("test.db")
 	for i := 0; i < b.N; i++ {
 		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
 		fs.Save(f)
@@ -25,7 +27,7 @@ func BenchmarkGet(b *testing.B) {
 	os.Remove("test.db")
 	os.Remove("test.db.lock")
 	defer os.Remove("test.db")
-	fs, _ := New("test.db")
+	fs, _ := Open("test.db")
 	for i := 0; i < 100; i++ {
 		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
 		fs.Save(f)
@@ -39,49 +41,126 @@ func BenchmarkGet2(b *testing.B) {
 	os.Remove("test.db")
 	os.Remove("test.db.lock")
 	defer os.Remove("test.db")
-	fs, _ := New("test.db")
+	fs, _ := Open("test.db")
 	for i := 0; i < 100; i++ {
 		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
 		fs.Save(f)
 	}
-	fs.startTransaction(true)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs WHERE name = ?`, "test99")
 	}
-	fs.finishTransaction()
 }
 
-func TestEmiting(t *testing.T) {
-	fs, _ := New("test.db")
+func TestPipelineCanonical(t *testing.T) {
+	os.Remove("test.db")
+	fs, _ := Open("test.db")
+	defer fs.Close()
+
 	for i := 0; i < 100; i++ {
 		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
 		fs.Save(f)
 	}
-	files := make(chan File, 1)
-	go func() {
-		err := fs.GetChannel(files, "SELECT * FROM fs LIMIT ?", 50)
-		assert.Nil(t, err)
+
+	done := make(chan struct{})
+	files, errchan := fs.Pipeline(done, "SELECT * FROM fs LIMIT 10")
+	defer func() {
+		close(done)
 	}()
+	count := 0
+L:
 	for {
-		f, more := <-files
-		if !more {
+		select {
+		case f, more := <-files:
+			if !more {
+				break L
+			} else {
+				assert.True(t, strings.HasPrefix(f.Name, "test"))
+				count++
+			}
+		case err := <-errchan:
+			assert.Nil(t, err)
+			break L
+		}
+	}
+	assert.Equal(t, 10, count)
+}
+
+func TestPipelineError(t *testing.T) {
+	fs, _ := Open("test.db")
+	for i := 0; i < 100; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+
+	done := make(chan struct{})
+	files, errchan := fs.Pipeline(done, "bad sql")
+	defer func() {
+		close(done)
+	}()
+	var err0 error
+	for {
+		finished := false
+		select {
+		case _, more := <-files:
+			if !more {
+				finished = true
+			}
+		case err0 = <-errchan:
+			finished = true
+		}
+		if finished {
 			break
 		}
-		assert.Equal(t, []byte("aslkdfjaklsdf"), f.Data)
 	}
+	assert.NotNil(t, err0)
+}
+func TestPipelineInterrupt(t *testing.T) {
+	fs, _ := Open("test.db")
+	defer fs.Close()
+
+	for i := 0; i < 100; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+
+	done := make(chan struct{})
+	files, errchan := fs.Pipeline(done, "SELECT * FROM fs LIMIT 10")
+	defer func() {
+		close(done)
+	}()
+	count := 0
+	for {
+		finished := false
+		select {
+		case f, more := <-files:
+			count++
+			if f.Name == "test5" {
+				done <- struct{}{} // NEED TO SPECIFY THAT WE ARE DONE EARLY
+				finished = true
+			}
+			if !more {
+				finished = true
+			}
+		case err := <-errchan:
+			fmt.Println("error2", err)
+			finished = true
+		}
+		if finished {
+			break
+		}
+	}
+
+	assert.Equal(t, 6, count)
+	time.Sleep(100 * time.Millisecond)
 }
 
 func TestBasic(t *testing.T) {
 	os.Remove("test.db")
 
-	fs, err := New("test.db")
-	assert.Nil(t, err)
-
-	err = fs.startTransaction(false)
-	assert.Nil(t, err)
-	err = fs.finishTransaction()
+	fs, err := Open("test.db")
+	defer fs.Close()
 	assert.Nil(t, err)
 
 	f, err := fs.NewFile("test1", []byte("aslkdfjaklsdf"))
@@ -105,22 +184,32 @@ func TestBasic(t *testing.T) {
 }
 
 func TestConcurrency(t *testing.T) {
+	fs, err := Open("test.db")
+	assert.Nil(t, err)
+	defer fs.Close()
+
 	var wg sync.WaitGroup
 	wg.Add(200)
 	for i := 0; i < 200; i++ {
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			fs, err := New("test.db")
-			assert.Nil(t, err)
+
 			start := time.Now()
 			for {
-				_, err = fs.Get("test1")
-				assert.Nil(t, err)
-				if time.Since(start) > 1*time.Second {
+				if i < 100 {
+					f, err := fs.NewFile(fmt.Sprintf("test%d", i), []byte("aslkdfjaklsdf"))
+					assert.Nil(t, err)
+					err = fs.Save(f)
+				} else {
+					f, err := fs.Get("test1")
+					assert.Equal(t, "test1", f.Name)
+					assert.Nil(t, err)
+				}
+				if time.Since(start) > 3*time.Second {
 					break
 				}
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 }
