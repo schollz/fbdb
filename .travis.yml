@@ -2,3 +2,12 @@ language: go
 
 go:
   - tip
+
+env:
+  - "PATH=/home/travis/gopath/bin:$PATH"
+
+install: true
+
+script:
+  - env GO111MODULE=on go build -v
+  - env GO111MODULE=on go test -v -cover github.com/schollz/fbdb/src/fbdb
