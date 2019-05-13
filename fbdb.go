@@ -280,6 +280,8 @@ func ProcessFile(f *File) (err error) {
 
 // Exists returns whether specified file exists
 func (fs *FileSystem) Exists(name string) (exists bool, err error) {
+	fs.Lock()
+	defer fs.Unlock()
 	files, err := fs.getAllFromPreparedQuery(`
 		SELECT * FROM fs WHERE name = ?`, name)
 	if err != nil {
