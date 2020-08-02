@@ -30,6 +30,18 @@ You can can retrieve files by name:
 f, _ := fs.Get("filename")
 ```
 
+You can use a callback to retrieve a selection of files:
+
+```golang
+fs.GetAll(func(f fbdb.File) bool {
+	fmt.Println(f)
+	if f.Name == "?" {
+		return true // will stop getting
+	}
+	return false // will continue getting next file
+}, "SELECT * FROM fs")
+```
+
 See examples for more information.
 
 ## Contributing

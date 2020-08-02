@@ -87,6 +87,23 @@ L:
 	assert.Equal(t, 10, count)
 }
 
+func TestGetAll(t *testing.T) {
+	fs, _ := Open("test.db")
+	for i := 0; i < 100; i++ {
+		f, _ := fs.NewFile("test"+strconv.Itoa(i), []byte("aslkdfjaklsdf"))
+		fs.Save(f)
+	}
+
+	err0 := fs.GetAll(func(f File) bool {
+		fmt.Println(f)
+		if f.Name == "test3" {
+			return true // will stop
+		}
+		return false
+	}, "SELECT * FROM fs")
+	assert.Nil(t, err0)
+}
+
 func TestPipelineError(t *testing.T) {
 	fs, _ := Open("test.db")
 	for i := 0; i < 100; i++ {

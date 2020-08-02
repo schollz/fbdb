@@ -293,6 +293,57 @@ func (fs *FileSystem) Exists(name string) (exists bool, err error) {
 	return
 }
 
+// GetAll pipes all the query into a function until the function
+// returns true to stop
+func (fs *FileSystem) GetAll(getfile func(f File) bool, query string, args ...interface{}) (err error) {
+	stmt, err := fs.db.Prepare(query)
+	if err != nil {
+		err = errors.Wrap(err, "preparing query: "+query)
+		return
+	}
+
+	defer stmt.Close()
+	rows, err := stmt.Query(args...)
+	if err != nil {
+		err = errors.Wrap(err, query)
+		return
+	}
+
+	// loop through rows
+	defer rows.Close()
+	for rows.Next() {
+		var f File
+		err = rows.Scan(
+			&f.Name,
+			&f.Permissions,
+			&f.UserID,
+			&f.GroupID,
+			&f.Size,
+			&f.Created,
+			&f.Modified,
+			&f.Data,
+			&f.IsCompressed,
+			&f.IsEncrypted,
+		)
+		if err != nil {
+			err = errors.Wrap(err, "getRows")
+			return
+		}
+		if f.IsCompressed {
+			f.Data = decompressByte(f.Data)
+			f.Size = len(f.Data)
+		}
+		if getfile(f) {
+			return
+		}
+	}
+	err = rows.Err()
+	if err != nil {
+		err = errors.Wrap(err, "getRows")
+	}
+	return
+}
+
 // CustomGet will get any query and emit a function with it
 func (fs *FileSystem) Pipeline(done <-chan struct{}, query string, args ...interface{}) (<-chan File, <-chan error) {
 	out := make(chan File)
